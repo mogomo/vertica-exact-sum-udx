@@ -13,8 +13,6 @@ Before using this code in production systems or mission-critical environments, y
 - Perform extensive testing under expected workload conditions, and  
 - Review Vertica’s documentation regarding UDx development and NUMERIC precision handling.
 
-By using this software, you agree that you assume full responsibility for any outcomes.
-
 ---
 
 
