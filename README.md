@@ -59,7 +59,7 @@ This ensures the output:
 
 ---
 
-## 3. Internal Approach (Simplified Explanation)
+## 3. Internal Approach 
 
 ### Intermediate state contains:
 
@@ -106,17 +106,11 @@ During termination:
 ---
 
 ## 5. Build Instructions
-
+  exact_sum.cpp  Makefile_exact_sum  OLD  README_exact_sum.md
 Run on the Vertica node with SDK installed:
 
 ```bash
-./1_compile.sh
-```
-
-Or manually:
-
-```bash
-make
+./1_compile_exact_sum.sh
 ```
 
 The Makefile prints whether build succeeded or failed.
@@ -126,7 +120,7 @@ The Makefile prints whether build succeeded or failed.
 ## 6. Register the UDX
 
 ```bash
-vsql -ef 2_register_and_test.sql
+vsql -ef 2_register_exact_sum.sql
 ```
 
 This:
@@ -134,35 +128,60 @@ This:
 1. Creates `exact_sum_lib`
 2. Creates `exact_sum` aggregate
 3. Grants PUBLIC access
-4. Runs a 5-row numeric accuracy test
-
 ---
 
-## 7. Stress Test
+## 7. Test
 
 To test extreme numeric conditions:
 
 ```bash
-vsql -ef 3_stress_test.sql
+vsql -ef 3_test_exact_sum.sql
 ```
 
 This script:
 
-- Creates 100 million rows of very large NUMERIC values,
+- Creates 1000 rows of very large NUMERIC values,
 - Compares:
-  - `SUM(a)/COUNT(a)`
-  - `AVG(a)`
+  - `SUM(a)`
+  - `EXACT_SUM(a)`
   - `exact_sum(a)`
 - Computes the true mathematical sum analytically:
 
   ```
   BASE + (n + 1)/2
+  And find smallest row count N where the built-in SUM exceeds its internal 256-bit limit is 403 rows:
+  -[ RECORD 1 ]-+-------------------------------------------------------------------------------------------------
+  boundary_kind | correct_until_here
+  n_rows        | 402
+  built_in_sum  | 578608270920987278375568558780822939733758459173977325560900545440417713141.26
+  exact_sum     | 578608270920987278375568558780822939733758459173977325560900545440417713141.26
+  expected_sum  | 578608270920987278375568558780822939733758459173977325560900545440417713141.26000000000000000000
+  gap           | 0.00
+  -[ RECORD 2 ]-+-------------------------------------------------------------------------------------------------
+  boundary_kind | first_overflow
+  n_rows        | 403
+  built_in_sum  | -577873297395157294570649827229486927506071341564085087655663104227170255411.97
+  exact_sum     | 580047594978004659665060022857392151026628505092320552738912735851961040987.39
+  expected_sum  | 580047594978004659665060022857392151026628505092320552738912735851961040987.39000000000000000000
+  gap           | -1157920892373161954235709850086879078532699846656405640394575840079131296399.36
+
+  ##### ===== SUMMARY =====
+  ##### The reported gap value -1157920892373161954235709850086879078532699846656405640394575840079131296399.36
+  ##### is exactly -2^256 / 100 when we compute it numerically, which matches the idea that Vertica’s SUM()
+  ##### for this NUMERIC(75,2) pattern is using an internal accumulator equivalent to a 256-bit integer scaled by 10².
+  ##### For n_rows = 402, the true mathematical sum is still within the positive range of that accumulator,
+  ##### so SUM(a) and exact_sum(a) agree and gap = 0.
+  ##### When we move to n_rows = 403, the true sum crosses that internal limit, the accumulator wraps once modulo 2^256,
+  ##### and the result is exactly one “wrap amount” (2²⁵⁶/100) lower than the mathematically correct value,
+  ##### hence the large negative constant gap that appears for 403 and then stays constant as we keep adding rows:
+  ##### built_in_sum = exact_sum - 2^256/100  → large negative decimal
+
   ```
 
 - Shows that:
 
   ```
-  exact_sum(a) - expected_avg = 0.00000
+  exact_sum(a) - expected_sum = 0.0
   ```
 
 ---
@@ -203,5 +222,4 @@ GROUP BY customer_id;
 - Performance suitable for large datasets  
 - Drop-in replacement for special high-precision needs  
 
-It is a safe, predictable, and helpful option for applications requiring **maximum numeric precision** in Vertica.
 
