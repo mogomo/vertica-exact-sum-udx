@@ -98,15 +98,14 @@ During termination:
 | File | Description |
 |------|-------------|
 | **exact_sum.cpp** | UDX implementation using Vertica SDK |
-| **Makefile** | Builds `/tmp/exact_sum.so` |
-| **1_compile.sh** | Wrapper script invoking `make` |
-| **2_register_and_test.sql** | Registers UDX + small sample test |
-| **3_stress_test.sql** | Extreme dataset test (up to 100M rows) |
+| **Makefile_exact_sum** | Builds `/tmp/exact_sum.so` |
+| **1_compile_exact_sum.sh** | Wrapper script invoking `make` |
+| **2_register_exact_sum.sql** | Registers UDX + small sample test |
+| **3_test_exact_sum.sql** | Extreme dataset test (up to 100M rows) |
 
 ---
 
 ## 5. Build Instructions
-  exact_sum.cpp  Makefile_exact_sum  OLD  README_exact_sum.md
 Run on the Vertica node with SDK installed:
 
 ```bash
