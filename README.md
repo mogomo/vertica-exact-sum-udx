@@ -1,191 +1,172 @@
 # exact_sum – High-Precision SUM() UDX for Vertica
 
----
-
-## ⚠️ Disclaimer
-
-This software—including the `exact_sum` UDx implementation, supporting scripts, and documentation—is provided **“as is”**, without any warranties of any kind, whether express or implied.  
-No guarantees are made regarding accuracy, reliability, performance, or suitability for any particular purpose.  
-
-Before using this code in production systems or mission-critical environments, you should:
-
-- Validate correctness with your own datasets,  
-- Perform extensive testing under expected workload conditions, and  
-- Review Vertica’s documentation regarding UDx development and NUMERIC precision handling.
-
----
-
-
 ## 1. Overview
 
-This project provides a Vertica User Defined Aggregate Function (UDAF) called `exact_sum`
-for computing sums on very large `NUMERIC(p, s)` values with:
+`exact_sum` is a Vertica User-Defined Aggregate Function (UDAF) that computes
+mathematically exact sums for `NUMERIC(p, s)` columns whenever the true sum
+can be represented within Vertica’s `NUMERIC(1024, s)` domain. When that is
+not possible, it raises a clear error instead of returning a result whose
+precision cannot be guaranteed.
 
-- **High precision** for extreme numeric ranges and very large row counts.
-- **Dynamic precision management** for performance.
-- **Clear diagnostics** when the required precision exceeds Vertica’s `NUMERIC(1024, s)` limit.
-
-Vertica’s built-in aggregates work well for typical workloads.  
-This UDX enhances precision handling for rare **extreme-value** scenarios where users require:
-
-- additional numeric safety,
-- guaranteed accuracy when possible,
-- explicit errors instead of silent truncation.
-
-`exact_sum` will either return the mathematically correct sum or clearly explain why the calculation cannot be guaranteed within Vertica’s numeric limits.
+Vertica’s built‑in aggregates work well for typical workloads. `exact_sum`
+is intended for rare, extreme-value scenarios that need additional numeric
+safety and explicit diagnostics.
 
 ---
 
 ## 2. What `exact_sum` does
 
-### Function Signature
+**Function signature**
 
 ```sql
-exact_sum(a NUMERIC(p, s)) RETURNS NUMERIC(p_out, s_out)
+exact_sum(a NUMERIC(p_in, s_in)) RETURNS NUMERIC(p_out, s_out)
 ```
 
-Where:
+Where the output type is chosen as:
 
+```text
+p_out = min(1024, p_in + 19)
+s_out = clamp(s_in, 0, p_out)
 ```
-p_out = min(1024, p_in + 5)
-s_out = min(p_out, s_in + 5)
-```
 
-This ensures the output:
+This means:
 
-- Preserves the input scale.
-- Adds a few digits for precision.
-- Adapts dynamically to the input column’s numeric properties.
+- The output keeps the input scale (limited to [0, `p_out`]).
+- Up to 19 extra digits of precision are added to accommodate large row counts.
+- The output type adapts automatically to the input column’s precision and scale.
+
+`exact_sum`:
+
+- Ignores NULLs (same semantics as built‑in `SUM`).
+- Returns NULL if all values in a group are NULL.
+- Either returns the mathematically correct sum or raises a diagnostic error
+  if that cannot be guaranteed within Vertica’s numeric limits.
 
 ---
 
-## 3. Internal Approach 
+## 3. Internal approach (high level)
 
-### Intermediate state contains:
+The intermediate state maintained by `exact_sum` contains:
 
-- A **wide NUMERIC sum** type (`p_sum = min(1024, p_in + 19)`),
-- Row count (`cnt`),
-- Input precision/scale (`p_in`, `s_in`).
+- A wide NUMERIC accumulator for the running sum:
 
-The UDX adds **19 digits** to internal precision because:
+  ```text
+  p_sum = min(1024, p_in + 19)
+  s_sum = clamp(s_in, 0, p_sum)
+  ```
 
-- `ceil(log10(N))` for any Vertica row count (`N ≤ 9e18`) is ≤ 19.
+- The row count (`cnt`).
+- The input precision and scale (`p_in`, `s_in`).
 
-This makes the SUM precise **whenever it is mathematically representable** within Vertica’s maximum precision.
+The extra 19 digits in `p_sum` are chosen because, for any 64‑bit row count
+`N ≤ 9,223,372,036,854,775,807`, we have `ceil(log10(N)) ≤ 19`. This is the
+maximum number of extra digits needed so that, whenever an exact sum is
+representable within `NUMERIC(1024, s)`, the accumulator has enough precision.
 
-### Final Step Logic
+**Finalization logic (terminate phase)**
 
-During termination:
+At the end of aggregation for each group, `exact_sum`:
 
-1. Compute `digits(rowCount)`
-2. Compute required precision:
+1. Computes the number of decimal digits in the row count `rowCount`.
+2. Computes the worst‑case precision needed for the sum:
 
-   ```
+   ```text
    p_needed = p_in + digits(rowCount)
    ```
 
-3. If `p_needed > 1024`  
-   → No exact SUM is possible within Vertica's numeric limits.  
-   → UDX returns a **clear diagnostic error**.
+3. If `p_needed > 1024`, then no exact sum can be represented within
+   Vertica’s numeric limit for this input type and group size, and the
+   function raises a clear error explaining the situation.
 
-4. Otherwise  
-   → SUM fits exactly, division is exact, the result is mathematically correct.
-
----
-
-## 4. Repository Contents
-
-| File | Description |
-|------|-------------|
-| **exact_sum.cpp** | UDX implementation using Vertica SDK |
-| **Makefile_exact_sum** | Builds `/tmp/exact_sum.so` |
-| **1_compile_exact_sum.sh** | Wrapper script invoking `make` |
-| **2_register_exact_sum.sql** | Registers UDX + small sample test |
-| **3_test_exact_sum.sql** | Extreme dataset test (up to 100M rows) |
+4. Otherwise, the accumulated sum is exactly representable in the chosen
+   intermediate type (`p_sum` is at least `p_needed`), and the result is
+   copied to the output. In this case, the returned value is the
+   mathematically correct sum of all non‑NULL inputs in the group.
 
 ---
 
-## 5. Build Instructions
-Run on the Vertica node with SDK installed:
+## 4. Repository contents
+
+| File                     | Description                                                                 |
+|--------------------------|-----------------------------------------------------------------------------|
+| `exact_sum.cpp`          | UDX implementation using the Vertica SDK                                   |
+| `Makefile_exact_sum`     | Makefile that builds `/tmp/exact_sum.so`                                   |
+| `1_compile_exact_sum.sh` | Helper script that runs the Makefile and produces `/tmp/exact_sum.so`      |
+| `2_register_exact_sum.sql` | SQL script to register the library and `exact_sum` aggregate in Vertica |
+| `3_test_exact_sum.sql`   | SQL script that demonstrates behavior and validates correctness on large `NUMERIC` values |
+
+---
+
+## 5. Build instructions
+
+Run on a Vertica node where the SDK and build tools are available:
 
 ```bash
 ./1_compile_exact_sum.sh
 ```
 
-The Makefile prints whether build succeeded or failed.
+This will:
+
+- Clean any previous build of `/tmp/exact_sum.so` using `Makefile_exact_sum`.
+- Compile `exact_sum.cpp` into `/tmp/exact_sum.so`.
+
+If you prefer to invoke `make` directly:
+
+```bash
+make -f Makefile_exact_sum clean
+make -f Makefile_exact_sum
+```
 
 ---
 
-## 6. Register the UDX
+## 6. Register the UDX in Vertica
+
+Use `vsql` to create the library object and aggregate function:
 
 ```bash
 vsql -ef 2_register_exact_sum.sql
 ```
 
-This:
+This script:
 
-1. Creates `exact_sum_lib`
-2. Creates `exact_sum` aggregate
-3. Grants PUBLIC access
+1. Creates or replaces a library object `exact_sum_lib` that points to `/tmp/exact_sum.so`.
+2. Creates or replaces the `exact_sum` aggregate function based on `ExactSumFactory`.
+3. Grants `EXECUTE` privilege on `exact_sum(NUMERIC)` to `PUBLIC` so all users can call it.
+
+You can adjust the path to the shared object or privileges in the SQL script if needed for your environment.
+
 ---
 
-## 7. Test
+## 7. Test and demonstration
 
-To test extreme numeric conditions:
+Run the test script:
 
 ```bash
 vsql -ef 3_test_exact_sum.sql
 ```
 
-This script:
+The script:
 
-- Creates 1000 rows of very large NUMERIC values,
-- Compares:
-  - `SUM(a)`
-  - `EXACT_SUM(a)`
-  - `exact_sum(a)`
-- Computes the true mathematical sum analytically:
+- Creates a table with 1,000 very large `NUMERIC(75,2)` values.
+- Compares the built‑in `SUM(a)` with `exact_sum(a)`.
+- Computes an analytical “expected” sum for an arithmetic progression and verifies
+  that `exact_sum(a)` matches it exactly.
+- Demonstrates a small example with extremely large `NUMERIC(1024,2)` values where
+  both `SUM(a)` and `exact_sum(a)` agree, because the accumulated total stays well
+  within the internal limits for that case.
+- Finds the smallest number of rows in a specific test pattern (403 rows) where the
+  built‑in `SUM(a)` no longer matches `exact_sum(a)`, illustrating how `exact_sum`
+  can be used to detect and quantify cases where internal accumulation limits are
+  exceeded for very large numeric ranges.
 
-  ```
-  BASE + (n + 1)/2
-  And find smallest row count N where the built-in SUM exceeds its internal 256-bit limit is 403 rows:
-  -[ RECORD 1 ]-+-------------------------------------------------------------------------------------------------
-  boundary_kind | correct_until_here
-  n_rows        | 402
-  built_in_sum  | 578608270920987278375568558780822939733758459173977325560900545440417713141.26
-  exact_sum     | 578608270920987278375568558780822939733758459173977325560900545440417713141.26
-  expected_sum  | 578608270920987278375568558780822939733758459173977325560900545440417713141.26000000000000000000
-  gap           | 0.00
-  -[ RECORD 2 ]-+-------------------------------------------------------------------------------------------------
-  boundary_kind | first_overflow
-  n_rows        | 403
-  built_in_sum  | -577873297395157294570649827229486927506071341564085087655663104227170255411.97
-  exact_sum     | 580047594978004659665060022857392151026628505092320552738912735851961040987.39
-  expected_sum  | 580047594978004659665060022857392151026628505092320552738912735851961040987.39000000000000000000
-  gap           | -1157920892373161954235709850086879078532699846656405640394575840079131296399.36
-
-  ##### ===== SUMMARY =====
-  ##### The reported gap value -1157920892373161954235709850086879078532699846656405640394575840079131296399.36
-  ##### is exactly -2^256 / 100 when we compute it numerically, which matches the idea that Vertica’s SUM()
-  ##### for this NUMERIC(75,2) pattern is using an internal accumulator equivalent to a 256-bit integer scaled by 10².
-  ##### For n_rows = 402, the true mathematical sum is still within the positive range of that accumulator,
-  ##### so SUM(a) and exact_sum(a) agree and gap = 0.
-  ##### When we move to n_rows = 403, the true sum crosses that internal limit, the accumulator wraps once modulo 2^256,
-  ##### and the result is exactly one “wrap amount” (2²⁵⁶/100) lower than the mathematically correct value,
-  ##### hence the large negative constant gap that appears for 403 and then stays constant as we keep adding rows:
-  ##### built_in_sum = exact_sum - 2^256/100  → large negative decimal
-
-  ```
-
-- Shows that:
-
-  ```
-  exact_sum(a) - expected_sum = 0.0
-  ```
+These tests are illustrative; you should repeat similar checks on your own data and
+schemas to validate behavior for your workload.
 
 ---
 
-## 8. Using exact_sum in Your Own Queries
+## 8. Using `exact_sum` in your own queries
+
+Basic usage:
 
 ```sql
 SELECT exact_sum(a) FROM big_table;
@@ -195,30 +176,32 @@ FROM orders
 GROUP BY customer_id;
 ```
 
-- NULLs are ignored (standard SQL behavior).
-- Returns NULL if all rows in a group are NULL.
-- Provides precise results or clear diagnostics when precision is mathematically impossible.
+Notes:
+
+- NULL values are ignored, following standard SQL `SUM` semantics.
+- If all values in a group are NULL, `exact_sum` returns NULL.
+- When the required precision exceeds Vertica’s numeric limit, `exact_sum`
+  raises a descriptive error so you know that no exact sum is possible for
+  that combination of type and group size.
 
 ---
 
 ## 9. Notes
 
-- This UDX respects Vertica's global numeric limit (`NUMERIC(1024, s)`).
-- It is designed for **extreme** numeric workloads, not typical queries.
-- Produces either:
-  - exact mathematical result, or
-  - explicit explanation of why precision cannot be guaranteed.
+- `exact_sum` respects Vertica’s global `NUMERIC(1024, s)` precision limit.
+- It is designed for specialized, high‑precision use cases rather than
+  everyday aggregation.
+- When an exact result is representable, it is returned; when it is not,
+  a clear diagnostic error explains why.
 
 ---
 
 ## 10. Summary
 
-`exact_sum` offers:
+`exact_sum` provides:
 
-- Dynamic precision handling  
-- Mathematical guarantees when possible  
-- Transparent diagnostics when limits are exceeded  
-- Performance suitable for large datasets  
-- Drop-in replacement for special high-precision needs  
-
-
+- Dynamic, input‑aware precision selection.
+- Mathematically exact results when possible within Vertica’s numeric domain.
+- Explicit diagnostics when precision requirements exceed those limits.
+- Familiar SQL semantics (NULL handling, group aggregation) with enhanced
+  safety for extreme numeric workloads.
