@@ -1,5 +1,10 @@
 # exact_sum – High-Precision SUM() UDX for Vertica
 
+## Disclaimer:
+This UDX is provided as-is without warranties of any kind. Verify correctness and performance in your own environment before using it in production. Use at your own risk.
+
+---
+
 ## 1. Overview
 
 `exact_sum` is a Vertica User-Defined Aggregate Function (UDAF) that computes
