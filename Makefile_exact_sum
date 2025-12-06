@@ -1,0 +1,52 @@
+# This Makefile builds, cleans, and deploys the exact_sum Vertica UDAF shared library.
+
+# Specify the path to the Vertica SDK include directory so the compiler can find Vertica headers like Vertica.h.
+VERTICA_SDK_INCLUDE  ?= /opt/vertica/sdk/include
+
+# Specify the C++ compiler to use so the build can be customized (e.g., clang or a different g++) if desired.
+CXX                  ?= g++
+
+# Specify the compilation flags so the shared object is optimized, position-independent, and compatible with Vertica’s expectations.
+CXXFLAGS             ?= -O3 -Wall -Wno-unused-value -shared -fPIC \
+                        -D HAVE_LONG_INT_64 -std=c++11
+
+# Specify the C++ standard library ABI version so the built shared library matches the ABI of the Vertica environment.
+#   0 → older libstdc++ ABI, 1 → newer ABI
+GLIBCXX_ABI          ?= 1
+
+# Specify the output path and name of the shared library so Vertica can load /tmp/exact_sum.so for the UDX.
+TARGET_SO            ?= /tmp/exact_sum.so
+
+# Specify the primary C++ source file for the exact_sum UDX so the build rule knows what to compile.
+SRC                  := exact_sum.cpp
+
+# Specify the Vertica SDK helper source file so it is compiled and linked alongside the UDX implementation.
+VERTICA_CPP          := $(VERTICA_SDK_INCLUDE)/Vertica.cpp
+
+# Define the default target so that running plain 'make' will build the shared library.
+all: $(TARGET_SO)
+
+# Define how to build the shared library from the source file, including a success/failure check that prints to stdout.
+$(TARGET_SO): $(SRC)
+	# Compilation of the exact_sum shared library is starting..
+	@echo "Building $(TARGET_SO) ..."
+	# Run the C++ compiler with all required flags and include paths, and report success or failure explicitly to stdout..
+	@if $(CXX) $(CXXFLAGS) -D_GLIBCXX_USE_CXX11_ABI=$(GLIBCXX_ABI) \
+	    -I $(VERTICA_SDK_INCLUDE) \
+	    -o $(TARGET_SO) $(SRC) $(VERTICA_CPP); then \
+	    echo "Build succeeded: $(TARGET_SO)"; \
+	else \
+	    echo "Build FAILED: $(TARGET_SO)"; \
+	    exit 1; \
+	fi
+
+# Define a target to remove the built shared library so you can start from a clean state.
+clean:
+	# Remove the compiled shared library file if it exists to clean the build output.
+	rm -f $(TARGET_SO)
+
+# Define a convenience target that builds the library and then prints a confirmation message.
+deploy: all
+	# Inform the user on stdout where the shared library has been built so it can be registered in Vertica.
+	@echo "Library built at $(TARGET_SO)."
+
